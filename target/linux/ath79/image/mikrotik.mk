@@ -102,6 +102,13 @@ define Device/mikrotik_routerboard-mapl-2nd
 endef
 TARGET_DEVICES += mikrotik_routerboard-mapl-2nd
 
+define Device/mikrotik_routerboard-2011r5
+  $(Device/mikrotik_nand)
+  SOC := ar9344
+  DEVICE_MODEL := RouterBOARD 2011UiAS
+endef
+TARGET_DEVICES += mikrotik_routerboard-2011r5
+
 define Device/mikrotik_routerboard-sxt-5nd-r2
   $(Device/mikrotik_nand)
   SOC := ar9344

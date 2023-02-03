@@ -1,0 +1,364 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+
+#include "ar9344.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include "qca9xxx_ar9331_dsa.dtsi"
+
+/ {
+	aliases {
+		led-boot = &led_user_sw;
+		led-failsafe = &led_user_sw;
+		led-running = &led_user_sw;
+		led-upgrade = &led_user_sw;
+		serial0 = &uart;
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		reset {
+			debounce-interval = <60>;
+			gpios = <&gpio 15 GPIO_ACTIVE_LOW>;
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+		};
+	};
+
+	beeper {
+		compatible = "gpio-beeper";
+		gpios = <&gpio 22 GPIO_ACTIVE_HIGH>;
+	};
+
+	gpio-export {
+		compatible = "gpio-export";
+
+		gpio_port10_poe {
+			gpio-export,name = "port10_poe";
+			gpio-export,output = <0>;
+			gpios = <&gpio 2 GPIO_ACTIVE_LOW>;
+		};
+
+		gpio_nand_power {
+			gpio-export,name = "nand_nce";
+			gpio-export,output = <0>;
+			gpios = <&gpio 14 GPIO_ACTIVE_LOW>;
+		};
+
+		gpio_usb_power {
+			gpio-export,name = "usb_power";
+			gpio-export,output = <0>;
+			gpios = <&gpio 20 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+};
+
+&switch10 {
+	qca,ar934x_sw;
+	qca,strict-cpu-mode;
+};
+
+&eth0 {
+	phy-mode = "rgmii-rxid";
+	pll-data = <0x6f000000 0x00000101 0x00001616>; /* default for ar934x, except for 1000M */
+
+	status = "okay";
+	max-frame-size = <2074>;
+	no-net-ip-align; /* this iface is for DSA */
+	nvmem-cells = <&macaddr_hard>;
+	nvmem-cell-names = "mac-address";
+	mac-address-increment = <0>;
+
+	fixed-link {
+		speed = <1000>;
+		full-duplex;
+	};
+
+	gmac-config {
+		device = <&gmac>;
+		rgmii-gmac0 = <1>;
+		rxdv-delay = <1>;
+		rxd-delay = <1>;
+	};
+
+};
+
+&mdio0 {
+	status = "okay";
+
+	sw0_phy_port1: sw0-phy@0 {
+		reg = <0>;
+	};
+	sw0_phy_port2: sw0-phy@1 {
+		reg = <1>;
+	};
+	sw0_phy_port3: sw0-phy@2 {
+		reg = <2>;
+	};
+	sw0_phy_port4: sw0-phy@3 {
+		reg = <3>;
+	};
+	sw0_phy_port5: sw0-phy@4 {
+		reg = <4>;
+	};
+
+	switch0: switch@10 {
+		compatible = "qca,qca8327";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		reg = <0x10>;
+		/* reset-gpios = ??? */
+		dsa,member = <0 0>;
+		qca,strict-cpu-mode;
+		qca,ignore-power-on-sel;
+		qca,led-open-drain;
+		qca,swregs-initvals = <
+			0x50 0xc731c731 /* LED_CTRL0 */
+			0x54 0x00000000 /* LED_CTRL1 */
+			0x58 0x00008000 /* LED_CTRL2 - turn off the backlight of the LCD screen (sw LED PORT 2) */
+			0x5c 0x0030c300 /* LED_CTRL3 */
+		>;
+		qca,phy_leds {
+			port6_led {
+				label = "green:port6";
+				entry = <1 14>;
+			};
+			port7_led {
+				label = "green:port7";
+				entry = <3 10>;
+			};
+			port8_led {
+				label = "green:port8";
+				entry = <3 16>;
+			};
+			port9_led {
+				label = "green:port9";
+				entry = <3 22>;
+			};
+			port10_led {
+				label = "green:port10";
+				entry = <1 30>;
+			};
+			led_user_sw: user {
+				label = "heart_led";
+				entry = <2 30>;
+				linux,default-trigger = "heartbeat";
+			};
+		};
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			switch0cpu: port@0 {
+				reg = <0>;
+				label = "cpu";
+				ethernet = <&eth0>;
+				phy-mode = "rgmii";
+				tx-internal-delay-ps = <3000>;
+				rx-internal-delay-ps = <2000>; /* Mac0_rgmii_rxclk_delay_en - 1000M: delay 2ns output to cpu, 10/100M: delay value depend on bit21:bit20 */
+				fixed-link {
+					speed = <1000>;
+					full-duplex;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+				label = "port1";
+				phy-handle = <&sw0_phy_port1>;
+				nvmem-cells = <&macaddr_hard>;
+				nvmem-cell-names = "mac-address";
+				mac-address-increment = <0>;
+			};
+
+			port@2 {
+				reg = <2>;
+				label = "port2";
+				phy-handle = <&sw0_phy_port2>;
+				nvmem-cells = <&macaddr_hard>;
+				nvmem-cell-names = "mac-address";
+				mac-address-increment = <1>;
+			};
+
+			port@3 {
+				reg = <3>;
+				label = "port3";
+				phy-handle = <&sw0_phy_port3>;
+				nvmem-cells = <&macaddr_hard>;
+				nvmem-cell-names = "mac-address";
+				mac-address-increment = <2>;
+			};
+
+			port@4 {
+				reg = <4>;
+				label = "port4";
+				phy-handle = <&sw0_phy_port4>;
+				nvmem-cells = <&macaddr_hard>;
+				nvmem-cell-names = "mac-address";
+				mac-address-increment = <3>;
+			};
+
+			port@5 {
+				reg = <5>;
+				label = "port5";
+				phy-handle = <&sw0_phy_port5>;
+				nvmem-cells = <&macaddr_hard>;
+				nvmem-cell-names = "mac-address";
+				mac-address-increment = <4>;
+			};
+		};
+	};
+};
+
+&switch10 {
+	dsa,member = <1 0>;
+};
+
+&eth1 {
+	status = "okay";
+	max-frame-size = <2074>;
+	no-net-ip-align; /* this iface is for DSA */
+	nvmem-cells = <&macaddr_hard>;
+	nvmem-cell-names = "mac-address";
+	mac-address-increment = <5>;
+};
+
+&switch_port1 {
+	status = "okay";
+	label = "port10";
+	nvmem-cells = <&macaddr_hard>;
+	nvmem-cell-names = "mac-address";
+	mac-address-increment = <9>;
+};
+&switch_port2 {
+	status = "okay";
+	label = "port9";
+	nvmem-cells = <&macaddr_hard>;
+	nvmem-cell-names = "mac-address";
+	mac-address-increment = <8>;
+};
+&switch_port3 {
+	status = "okay";
+	label = "port8";
+	nvmem-cells = <&macaddr_hard>;
+	nvmem-cell-names = "mac-address";
+	mac-address-increment = <7>;
+};
+&switch_port4 {
+	status = "okay";
+	label = "port7";
+	nvmem-cells = <&macaddr_hard>;
+	nvmem-cell-names = "mac-address";
+	mac-address-increment = <6>;
+};
+
+&switch_port5 {
+	status = "okay";
+	label = "port6";
+	nvmem-cells = <&macaddr_hard>;
+	nvmem-cell-names = "mac-address";
+	mac-address-increment = <5>;
+};
+
+&nand {
+	nand-ecc-mode = "soft";
+	qca,nand-scan-fixup;
+	qca,nand-swap-dma;
+	status = "okay";
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		partition@0 {
+			label = "booter";
+			reg = <0x0000000 0x0040000>;
+			read-only;
+		};
+
+		partition@40000 {
+			label = "kernel";
+			reg = <0x0040000 0x03c0000>;
+		};
+
+		partition@400000 {
+			label = "ubi";
+			reg = <0x0400000 0>; /* dynamic size: 64Mb || 128Mb */
+		};
+	};
+};
+
+&spi {
+	status = "okay";
+
+	flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <40000000>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "RouterBoot";
+				reg = <0x0 0x10000>;
+				read-only;
+				compatible = "mikrotik,routerboot-partitions";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				partition@0 {
+					label = "bootloader1";
+					reg = <0x0 0x0>;
+					read-only;
+				};
+
+				hard_config: hard_config {
+					read-only;
+				};
+
+				bios {
+					size = <0x1000>;
+					read-only;
+				};
+
+				soft_config {
+					label = "soft_config";
+				};
+			};
+		};
+	};
+};
+
+&uart {
+	status = "okay";
+};
+
+&usb {
+	status = "okay";
+};
+
+&usb_phy {
+	status = "okay";
+};
+
+&wmac {
+	status = "okay";
+
+	qca,no-eeprom;
+};
+
+&hard_config {
+	compatible = "nvmem-cells";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	macaddr_hard: macaddr@10 {
+		reg = <0x10 0x6>;
+	};
+};
