@@ -1,0 +1,17 @@
+diff -rNu a/drivers/net/dsa/qca8k.c b/drivers/net/dsa/qca8k.c
+--- a/drivers/net/dsa/qca8k.c	2023-01-10 10:46:56.235058087 +0200
++++ b/drivers/net/dsa/qca8k.c	2023-01-10 11:27:42.672426455 +0200
+@@ -1306,6 +1306,13 @@
+ 					  QCA8K_PORT_VLAN_SVID(QCA8K_PORT_VID_DEF));
+ 			if (ret)
+ 				return ret;
++			/* Here we will also correct the VLAN_CTRL1 value(possibly changed
++				 by the boot-loader and because of this the VLAN tagged traffic
++				 can't pass freely throw all our ports. 0x3040 - according to the
++				 datasheet is the default value for this switch chip. */
++			ret = qca8k_write(priv, QCA8K_REG_PORT_VLAN_CTRL1(i), 0x3040);
++			if (ret)
++				return ret;
+ 		}
+ 
+ 		/* The port 5 of the qca8337 have some problem in flood condition. The

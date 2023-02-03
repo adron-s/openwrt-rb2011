@@ -1,0 +1,284 @@
+diff -rNu a/drivers/net/dsa/qca8k.c b/drivers/net/dsa/qca8k.c
+--- a/drivers/net/dsa/qca8k.c	2023-01-27 12:03:34.026279663 +0200
++++ b/drivers/net/dsa/qca8k.c	2023-02-01 14:29:24.077957210 +0200
+@@ -20,6 +20,7 @@
+ #include <linux/phylink.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/etherdevice.h>
++#include <linux/leds.h>
+ 
+ #include "qca8k.h"
+ 
+@@ -1433,6 +1434,7 @@
+ 			QCA8K_PORT_PAD_RGMII_TX_DELAY_EN |
+ 			QCA8K_PORT_PAD_RGMII_RX_DELAY_EN,
+ 			val);
++
+ 	if (ret)
+ 		dev_err(priv->dev, "Failed to set internal delay for CPU port%d",
+ 			cpu_port_index == QCA8K_CPU_PORT0 ? 0 : 6);
+@@ -2245,9 +2247,191 @@
+ 	return 0;
+ }
+ 
++static int _qca8k_phy_led_set(struct qca8k_priv *priv,
++struct qca8k_phy_led *led, enum led_brightness brightness)
++{
++	u32 reg, mask, val;
++
++	reg = QCA8K_GET_PHY_LED_CTRL_REG(led->reg);
++	mask = QCA8K_PHY_LED_PTRN_MASK << led->shift;
++	if (brightness)
++		val = QCA8K_PHY_LED_PTRN_ALWAYS_ON << led->shift;
++	else
++		val = QCA8K_PHY_LED_PTRN_ALWAYS_OFF;
++
++	return qca8k_rmw(priv, reg, mask, val);
++}
++
++static void qca8k_phy_led_set(struct led_classdev *cdev,
++enum led_brightness brightness)
++{
++	struct qca8k_phy_led *led;
++
++	led = container_of(cdev, struct qca8k_phy_led, cdev);
++
++	if (led->expect_brightness != brightness)
++		atomic_inc(&led->change_count);
++	led->expect_brightness = brightness;
++}
++
++static enum led_brightness qca8k_phy_led_get(struct led_classdev *cdev)
++{
++	struct qca8k_phy_led *led;
++
++	led = container_of(cdev, struct qca8k_phy_led, cdev);
++
++	return led->actual_brightness ? LED_FULL : LED_OFF;
++}
++
++static void qca8k_process_phy_leds(struct qca8k_priv *priv)
++{
++	struct qca8k_phy_led *led;
++	struct qca8k_phy_leds *leds;
++	int a, brightness, change_count;
++
++	leds = &priv->phy_leds;
++	led = leds->data;
++
++	if (!led || !leds->count)
++		return;
++
++	for (a = 0; a < leds->count; a++) {
++		change_count = atomic_read(&led->change_count);
++		if (led->expect_brightness != led->actual_brightness) {
++			if (!_qca8k_phy_led_set(priv, led, led->expect_brightness))
++				led->actual_brightness = led->expect_brightness;
++		} else {
++			if (change_count) {
++				brightness = led->actual_brightness ? LED_OFF : LED_FULL;
++				if (!_qca8k_phy_led_set(priv, led, brightness)) {
++					led->actual_brightness = brightness;
++				}
++			}
++		}
++		atomic_sub(change_count, &led->change_count);
++		led++;
++	}
++}
++
++static int qca8k_phy_leds_thrd(void *data)
++{
++	struct qca8k_priv *priv;
++	struct qca8k_phy_leds *leds;
++
++	priv = data;
++	leds = &priv->phy_leds;
++
++	allow_signal(SIGTERM);
++	while (!signal_pending(current)) {
++		qca8k_process_phy_leds(priv);
++		set_current_state(TASK_INTERRUPTIBLE);
++		if (!signal_pending(current)) {
++			schedule_timeout(msecs_to_jiffies(QCA8K_LEDS_CHECK_PERIOD));
++		} else {
++			set_current_state(TASK_RUNNING);
++			break;
++		}
++	}
++	complete(&leds->thrd_complete);
++	return 0;
++}
++
++static int qca8k_phy_led_probe(struct qca8k_priv *priv,
++struct device_node *leds_np)
++{
++	u32 tmp[2];
++	int ret = 0, leds_count;
++	struct qca8k_phy_led *led;
++	struct device_node *led_np;
++	struct qca8k_phy_leds *leds;
++
++	leds = &priv->phy_leds;
++	memset(leds, 0x0, sizeof(*leds));
++	leds_count = of_get_child_count(leds_np);
++	leds->data = kzalloc(leds_count * sizeof(*led), GFP_KERNEL);
++	if (!leds->data) {
++		dev_err(priv->dev, "Can't alloc memory for phy_leds->data !\n");
++		return -ENOMEM;
++	}
++
++	led = leds->data;
++	for_each_child_of_node(leds_np, led_np) {
++		ret = of_property_read_string(led_np, "label", &led->cdev.name);
++		if (ret) {
++			of_node_put(led_np);
++			return ret;
++		}
++		ret = of_property_read_string(led_np, "linux,default-trigger",
++			&led->cdev.default_trigger);
++		ret = of_property_read_u32_array(led_np, "entry", tmp, ARRAY_SIZE(tmp));
++		if (ret) {
++			of_node_put(led_np);
++			return ret;
++		}
++		led->reg = tmp[0];
++		if (led->reg > QCA8K_PHY_LED_CTRL_MAX_REG) {
++			dev_warn(priv->dev, "phy_led->reg is out of range !\n");
++			led->reg = 0;
++		}
++		led->shift = tmp[1];
++		if (led->shift > 30) {
++			dev_warn(priv->dev, "phy_led->shift is out of range !\n");
++			led->shift = 0;
++		}
++		atomic_set(&led->change_count, 0);
++		led->cdev.brightness_set = qca8k_phy_led_set;
++		led->cdev.brightness_get = qca8k_phy_led_get;
++		_qca8k_phy_led_set(priv, led, 0);
++		ret = led_classdev_register(priv->dev, &led->cdev);
++		if (ret) {
++			of_node_put(led_np);
++			return ret;
++		}
++		led->cdev.dev->of_node = of_node_get(led_np);
++		led++;
++	}
++
++	if (!ret) {
++		leds->count = leds_count;
++		init_completion(&leds->thrd_complete);
++		leds->thrd = kthread_run(qca8k_phy_leds_thrd, priv,
++			"qca8k_phy_leds");
++	}
++	return ret;
++}
++
++static void qca8k_phy_led_remove(struct qca8k_priv *priv)
++{
++	int a;
++	struct qca8k_phy_led *led;
++	struct qca8k_phy_leds *leds;
++
++	leds = &priv->phy_leds;
++	led = leds->data;
++
++	if (!led || !leds->count)
++		return;
++
++	for (a = 0; a < leds->count; a++) {
++		led_classdev_unregister(&led->cdev);
++		led++;
++	}
++
++	if (leds->thrd) {
++		send_sig(SIGTERM, leds->thrd, 0);
++		wait_for_completion(&leds->thrd_complete);
++		leds->thrd = NULL;
++	}
++
++	leds->count = 0;
++	kfree(leds->data);
++	leds->data = NULL;
++}
++
+ static int
+ qca8k_sw_probe(struct mdio_device *mdiodev)
+ {
++	struct device_node *phy_leds_np;
+ 	struct qca8k_priv *priv;
+ 	int ret;
+ 
+@@ -2301,7 +2485,15 @@
+ 	mutex_init(&priv->reg_mutex);
+ 	dev_set_drvdata(&mdiodev->dev, priv);
+ 
+-	return dsa_register_switch(priv->ds);
++	ret = dsa_register_switch(priv->ds);
++	if (!ret) {
++		phy_leds_np = of_get_child_by_name(priv->dev->of_node, "qca,phy_leds");
++		if (phy_leds_np) {
++			qca8k_phy_led_probe(priv, phy_leds_np);
++			of_node_put(phy_leds_np);
++		}
++	}
++	return ret;
+ }
+ 
+ static void
+@@ -2310,6 +2502,8 @@
+ 	struct qca8k_priv *priv = dev_get_drvdata(&mdiodev->dev);
+ 	int i;
+ 
++	qca8k_phy_led_remove(priv);
++
+ 	for (i = 0; i < QCA8K_NUM_PORTS; i++)
+ 		qca8k_port_set_status(priv, i, 0);
+ 
+diff -rNu a/drivers/net/dsa/qca8k.h b/drivers/net/dsa/qca8k.h
+--- a/drivers/net/dsa/qca8k.h	2023-01-27 12:03:34.026279663 +0200
++++ b/drivers/net/dsa/qca8k.h	2023-02-01 14:18:34.658818753 +0200
+@@ -78,6 +78,12 @@
+ #define   QCA8K_MDIO_MASTER_DATA(x)			FIELD_PREP(QCA8K_MDIO_MASTER_DATA_MASK, x)
+ #define   QCA8K_MDIO_MASTER_MAX_PORTS			5
+ #define   QCA8K_MDIO_MASTER_MAX_REG			32
++#define		QCA8K_LEDS_CHECK_PERIOD				500 /* ms */
++#define		QCA8K_PHY_LED_CTRL_MAX_REG		3
++#define		QCA8K_GET_PHY_LED_CTRL_REG(x)	(0x050 + 4 * x)
++#define		QCA8K_PHY_LED_PTRN_MASK				GENMASK(1, 0)
++#define		QCA8K_PHY_LED_PTRN_ALWAYS_ON	0x02
++#define		QCA8K_PHY_LED_PTRN_ALWAYS_OFF	0x00
+ #define QCA8K_GOL_MAC_ADDR0				0x60
+ #define QCA8K_GOL_MAC_ADDR1				0x64
+ #define QCA8K_MAX_FRAME_SIZE				0x78
+@@ -302,6 +308,22 @@
+ 	u8 rgmii_tx_delay[QCA8K_NUM_CPU_PORTS]; /* 0: CPU port0, 1: CPU port6 */
+ };
+ 
++struct qca8k_phy_led {
++	struct led_classdev cdev;
++	enum led_brightness actual_brightness;
++	enum led_brightness expect_brightness;
++	atomic_t change_count;
++	u32 reg;
++	u32 shift;
++};
++
++struct qca8k_phy_leds {
++	int count;
++	void *data;
++	struct task_struct *thrd;
++	struct completion thrd_complete;
++};
++
+ struct qca8k_priv {
+ 	u8 switch_id;
+ 	u8 switch_revision;
+@@ -317,6 +339,7 @@
+ 	struct gpio_desc *reset_gpio;
+ 	int strict_cpu_mode;
+ 	unsigned int port_mtu[QCA8K_NUM_PORTS];
++	struct qca8k_phy_leds phy_leds;
+ };
+ 
+ struct qca8k_mib_desc {
