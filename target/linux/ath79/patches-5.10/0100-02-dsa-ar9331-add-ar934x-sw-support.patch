@@ -1,0 +1,426 @@
+diff -rNu a/drivers/net/dsa/qca/ar9331.c b/drivers/net/dsa/qca/ar9331.c
+--- a/drivers/net/dsa/qca/ar9331.c	2023-02-02 15:11:11.590030663 +0200
++++ b/drivers/net/dsa/qca/ar9331.c	2023-02-02 14:57:04.332189072 +0200
+@@ -53,9 +53,20 @@
+ /* dummy reg to change page */
+ #define AR9331_SW_REG_PAGE			0x40000
+ 
++/* Operational Mode 0 */
++#define AR934X_REG_OPER_MODE0		0x04
++#define AR934X_OPER_MODE0_MAC_GMII_EN	BIT(6)
++#define AR934X_OPER_MODE0_PHY_MII_EN	BIT(10)
++
++/* Operational Mode 1 */
++#define AR934X_REG_OPER_MODE1		0x08
++#define AR934X_REG_OPER_MODE1_PHY4_MII_EN	BIT(28)
++
+ /* Global Interrupt */
+ #define AR9331_SW_REG_GINT			0x10
++#define AR934X_SW_REG_GINT			0x14
+ #define AR9331_SW_REG_GINT_MASK			0x14
++#define AR934X_SW_REG_GINT_MASK			0x18
+ #define AR9331_SW_GINT_PHY_INT			BIT(2)
+ 
+ #define AR9331_SW_REG_FLOOD_MASK		0x2c
+@@ -64,6 +75,12 @@
+ #define AR9331_SW_REG_GLOBAL_CTRL		0x30
+ #define AR9331_SW_GLOBAL_CTRL_MFS_M		GENMASK(13, 0)
+ 
++#define AR9331_REG_ATU_FUNC0				0x50
++#define AR9331_ATU_FUNC0_FLUSH_ALL	0x1
++
++#define AR9331_REG_GLOBAL_CPUPORT		0x0078
++#define AR9331_REG_GLOBAL_CPUPORT_CPU_PORT_EN BIT(8)
++
+ #define AR9331_SW_REG_MDIO_CTRL			0x98
+ #define AR9331_SW_MDIO_CTRL_BUSY		BIT(31)
+ #define AR9331_SW_MDIO_CTRL_MASTER_EN		BIT(30)
+@@ -72,7 +89,8 @@
+ #define AR9331_SW_MDIO_CTRL_REG_ADDR_M		GENMASK(20, 16)
+ #define AR9331_SW_MDIO_CTRL_DATA_M		GENMASK(16, 0)
+ 
+-#define AR9331_SW_REG_PORT_STATUS(_port)	(0x100 + (_port) * 0x100)
++#define AR9331_PORT_OFFSET(_port)		(0x0100 * (_port + 1))
++#define AR9331_SW_REG_PORT_STATUS(_port)	(AR9331_PORT_OFFSET(_port) + 0x0000)
+ 
+ /* FLOW_LINK_EN - enable mac flow control config auto-neg with phy.
+  * If not set, mac can be config by software.
+@@ -101,8 +119,11 @@
+ 	 AR9331_SW_PORT_STATUS_RX_FLOW_EN | AR9331_SW_PORT_STATUS_TX_FLOW_EN | \
+ 	 AR9331_SW_PORT_STATUS_SPEED_M)
+ 
+-#define AR9331_SW_REG_PORT_CTRL(_port)			(0x104 + (_port) * 0x100)
++#define AR9331_SW_REG_PORT_CTRL(_port)	(AR9331_PORT_OFFSET(_port) + 0x0004)
++#define AR9331_PORT_CTRL_LOCK_DROP BIT(5)
++#define AR9331_PORT_CTRL_PORT_LOCK BIT(6)
+ #define AR9331_SW_PORT_CTRL_HEAD_EN			BIT(11)
++#define AR9331_PORT_CTRL_LEARN BIT(14)
+ #define AR9331_SW_PORT_CTRL_PORT_STATE			GENMASK(2, 0)
+ #define AR9331_SW_PORT_CTRL_PORT_STATE_DISABLED		0
+ #define AR9331_SW_PORT_CTRL_PORT_STATE_BLOCKING		1
+@@ -118,6 +139,12 @@
+ #define AR9331_SW_8021Q_MODE_NONE			0
+ #define AR9331_SW_PORT_VLAN_PORT_VID_MEMBER		GENMASK(25, 16)
+ 
++#define AR934X_REG_PORT_VLAN1(_port)	(AR9331_PORT_OFFSET(_port) + 0x08)
++#define AR934X_PORT_VLAN1_DEFAULT_CVID_M GENMASK(27, 16)
++#define AR934X_PORT_VLAN1_DEFAULT_SVID_M GENMASK(11, 0)
++#define AR934X_REG_PORT_VLAN2(_port)	(AR9331_PORT_OFFSET(_port) + 0x0c)
++#define AR934X_REG_PORT_VLAN2_PORT_VID_MEMBER	GENMASK(22, 16)
++
+ /* Phy bypass mode
+  * ------------------------------------------------------------------------
+  * Bit:   | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |10 |11 |12 |13 |14 |15 |
+@@ -171,6 +198,8 @@
+ #define AR9331_SW_MDIO_POLL_SLEEP_US		1
+ #define AR9331_SW_MDIO_POLL_TIMEOUT_US		20
+ 
++#define AR9331_MAX_MTU 9000
++
+ struct ar9331_sw_priv {
+ 	struct device *dev;
+ 	struct dsa_switch ds;
+@@ -182,6 +211,9 @@
+ 	struct mii_bus *sbus; /* mdio slave */
+ 	struct regmap *regmap;
+ 	struct reset_control *sw_reset;
++	bool ar934x_sw;
++	bool strict_cpu_mode;
++	enum dsa_tag_protocol tag_proto;
+ };
+ 
+ /* Warning: switch reset will reset last AR9331_SW_MDIO_PHY_MODE_PAGE request
+@@ -270,6 +302,7 @@
+ 	if (ret)
+ 		goto error;
+ 
++	/* there is no need to read the same register for the second time ? */
+ 	ret = regmap_read(regmap, AR9331_SW_REG_MDIO_CTRL, &val);
+ 	if (ret)
+ 		goto error;
+@@ -320,7 +353,7 @@
+ {
+ 	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
+ 	struct regmap *regmap = priv->regmap;
+-	u32 port_mask, port_ctrl, val;
++	u32 port_mask, port_ctrl, val, vlan;
+ 	int ret;
+ 
+ 	/* Generate default port settings */
+@@ -345,13 +378,35 @@
+ 		port_mask = 0;
+ 	}
+ 
+-	val = FIELD_PREP(AR9331_SW_PORT_VLAN_8021Q_MODE,
+-			 AR9331_SW_8021Q_MODE_NONE) |
+-		FIELD_PREP(AR9331_SW_PORT_VLAN_PORT_VID_MEMBER, port_mask);
++	if (priv->strict_cpu_mode) {
++		port_ctrl &= ~AR9331_PORT_CTRL_LEARN; /* disable learning for all ports */
++		port_ctrl &= ~AR9331_PORT_CTRL_LOCK_DROP; /* disarm LOCK_DROP_EN */
++		port_ctrl |= AR9331_PORT_CTRL_PORT_LOCK; /* set PORT_LOCK_EN */
++	}
+ 
+-	ret = regmap_write(regmap, AR9331_SW_REG_PORT_VLAN(port), val);
+-	if (ret)
+-		goto error;
++	if (priv->ar934x_sw) {
++		vlan = 1;
++		val = FIELD_PREP(AR934X_PORT_VLAN1_DEFAULT_SVID_M, vlan) |
++					FIELD_PREP(AR934X_PORT_VLAN1_DEFAULT_CVID_M, vlan);
++		ret = regmap_write(regmap, AR934X_REG_PORT_VLAN1(port), val);
++		if (ret)
++			goto error;
++
++		val = FIELD_PREP(AR9331_SW_PORT_VLAN_8021Q_MODE,
++					AR9331_SW_8021Q_MODE_NONE) |
++					FIELD_PREP(AR934X_REG_PORT_VLAN2_PORT_VID_MEMBER, port_mask);
++		ret = regmap_write(regmap, AR934X_REG_PORT_VLAN2(port), val);
++		if (ret)
++			goto error;
++	} else {
++		/* Old ar7240/ar9331 port vlan init way */
++		val = FIELD_PREP(AR9331_SW_PORT_VLAN_8021Q_MODE,
++					AR9331_SW_8021Q_MODE_NONE) |
++					FIELD_PREP(AR9331_SW_PORT_VLAN_PORT_VID_MEMBER, port_mask);
++		ret = regmap_write(regmap, AR9331_SW_REG_PORT_VLAN(port), val);
++		if (ret)
++			goto error;
++	}
+ 
+ 	ret = regmap_write(regmap, AR9331_SW_REG_PORT_CTRL(port), port_ctrl);
+ 	if (ret)
+@@ -364,6 +419,78 @@
+ 	return ret;
+ }
+ 
++static int ar9xxx_sw_setup2(struct dsa_switch *ds)
++{
++	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
++	struct regmap *regmap = priv->regmap;
++	struct device_node *ports_np, *port0_np, *port_np, *np;
++	const char *phy_mode;
++	int ret;
++
++	np = priv->dev->of_node;
++
++	if (priv->ar934x_sw) {
++		if (of_property_read_bool(np, "qca,phy4-mii-enable")) {
++			/* Using sw MAC5 PHY as GMAC0 PHY */
++			ret = regmap_write_bits(regmap, AR934X_REG_OPER_MODE1,
++						AR934X_REG_OPER_MODE1_PHY4_MII_EN,
++						AR934X_REG_OPER_MODE1_PHY4_MII_EN);
++			if (ret)
++				return ret;
++			/* disable sw MAC5(port5) to prevent mii conflict */
++			ret = regmap_write(regmap, AR9331_SW_REG_PORT_STATUS(5), 0);
++			if (ret)
++				return ret;
++		}
++
++		ports_np = of_get_child_by_name(np, "ports");
++		if (!ports_np)
++			return -ENOENT;
++		port0_np = NULL;
++		for_each_available_child_of_node(ports_np, port_np) {
++			if (!strcmp(port_np->full_name, "port@0")) {
++				port0_np = port_np;
++				break;
++			}
++		}
++		of_node_put(ports_np);
++		if (!port0_np)
++			return -ENOENT;
++		ret = of_property_read_string(port0_np, "phy-mode", &phy_mode);
++		if (ret < 0) {
++			of_node_put(port0_np);
++			return ret;
++		}
++		if (phy_mode && !strcmp(phy_mode, "gmii")) {
++			/* Connect sw MAC0 to CPU through GMII interface */
++			ret = regmap_write_bits(regmap, AR934X_REG_OPER_MODE0,
++						AR934X_OPER_MODE0_MAC_GMII_EN,
++						AR934X_OPER_MODE0_MAC_GMII_EN);
++			if (ret) {
++				of_node_put(port0_np);
++				return ret;
++			}
++		}
++		of_node_put(port0_np);
++	}
++
++	if (priv->strict_cpu_mode) {
++		/* Enable CPU port, and set mirror port to 0(CPU port) */
++		ret = regmap_write(regmap, AR9331_REG_GLOBAL_CPUPORT,
++					AR9331_REG_GLOBAL_CPUPORT_CPU_PORT_EN);
++		if (ret)
++			return ret;
++
++		/* Flush all ATU entries */
++		ret = regmap_write(regmap, AR9331_REG_ATU_FUNC0,
++					AR9331_ATU_FUNC0_FLUSH_ALL);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
+ static int ar9331_sw_setup(struct dsa_switch *ds)
+ {
+ 	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
+@@ -403,6 +530,10 @@
+ 
+ 	ds->configure_vlan_while_not_filtering = false;
+ 
++	ret = ar9xxx_sw_setup2(ds);
++	if (ret)
++		goto error;
++
+ 	return 0;
+ error:
+ 	dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+@@ -424,7 +555,8 @@
+ 							int port,
+ 							enum dsa_tag_protocol m)
+ {
+-	return DSA_TAG_PROTO_AR9331;
++	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
++	return priv->tag_proto;
+ }
+ 
+ static void ar9331_sw_phylink_validate(struct dsa_switch *ds, int port,
+@@ -550,9 +682,22 @@
+ 		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+ }
+ 
++static int ar9331_port_max_mtu(struct dsa_switch *ds, int port)
++{
++	return AR9331_MAX_MTU;
++}
++
++static int ar9331_port_change_mtu(struct dsa_switch *ds,
++int port, int new_mtu)
++{
++	return 0;
++}
++
+ static const struct dsa_switch_ops ar9331_sw_ops = {
+ 	.get_tag_protocol	= ar9331_sw_get_tag_protocol,
+ 	.setup			= ar9331_sw_setup,
++	.port_max_mtu		= ar9331_port_max_mtu,
++	.port_change_mtu	= ar9331_port_change_mtu,
+ 	.port_disable		= ar9331_sw_port_disable,
+ 	.phylink_validate	= ar9331_sw_phylink_validate,
+ 	.phylink_mac_config	= ar9331_sw_phylink_mac_config,
+@@ -564,10 +709,14 @@
+ {
+ 	struct ar9331_sw_priv *priv = data;
+ 	struct regmap *regmap = priv->regmap;
+-	u32 stat;
++	u32 stat, reg;
+ 	int ret;
+ 
+-	ret = regmap_read(regmap, AR9331_SW_REG_GINT, &stat);
++	reg = AR9331_SW_REG_GINT;
++	if (priv->ar934x_sw)
++		reg = AR934X_SW_REG_GINT;
++
++	ret = regmap_read(regmap, reg, &stat);
+ 	if (ret) {
+ 		dev_err(priv->dev, "can't read interrupt status\n");
+ 		return IRQ_NONE;
+@@ -583,7 +732,7 @@
+ 		handle_nested_irq(child_irq);
+ 	}
+ 
+-	ret = regmap_write(regmap, AR9331_SW_REG_GINT, stat);
++	ret = regmap_write(regmap, reg, stat);
+ 	if (ret) {
+ 		dev_err(priv->dev, "can't write interrupt status\n");
+ 		return IRQ_NONE;
+@@ -618,8 +767,13 @@
+ 	struct ar9331_sw_priv *priv = irq_data_get_irq_chip_data(d);
+ 	struct regmap *regmap = priv->regmap;
+ 	int ret;
++	u32 reg;
++
++	reg = AR9331_SW_REG_GINT_MASK;
++	if (priv->ar934x_sw)
++		reg = AR934X_SW_REG_GINT_MASK;
+ 
+-	ret = regmap_update_bits(regmap, AR9331_SW_REG_GINT_MASK,
++	ret = regmap_update_bits(regmap, reg,
+ 				 AR9331_SW_GINT_PHY_INT, priv->irq_mask);
+ 	if (ret)
+ 		dev_err(priv->dev, "failed to change IRQ mask\n");
+@@ -719,6 +873,7 @@
+ 	struct ar9331_sw_priv *priv = ctx;
+ 	struct mii_bus *sbus = priv->sbus;
+ 	u32 reg = *(u32 *)reg_buf;
++	unsigned long flags;
+ 	int ret;
+ 
+ 	if (reg == AR9331_SW_REG_PAGE) {
+@@ -731,6 +886,7 @@
+ 	}
+ 
+ 	mutex_lock_nested(&sbus->mdio_lock, MDIO_MUTEX_NESTED);
++	local_irq_save(flags);
+ 
+ 	ret = __ar9331_mdio_read(sbus, reg);
+ 	if (ret < 0)
+@@ -743,10 +899,12 @@
+ 
+ 	*(u32 *)val_buf |= ret << 16;
+ 
++	local_irq_restore(flags);
+ 	mutex_unlock(&sbus->mdio_lock);
+ 
+ 	return 0;
+ error:
++	local_irq_restore(flags);
+ 	mutex_unlock(&sbus->mdio_lock);
+ 	dev_err_ratelimited(&sbus->dev, "Bus error. Failed to read register.\n");
+ 
+@@ -757,15 +915,21 @@
+ {
+ 	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ctx;
+ 	struct mii_bus *sbus = priv->sbus;
++	unsigned long flags;
+ 	int ret;
+ 
+ 	mutex_lock_nested(&sbus->mdio_lock, MDIO_MUTEX_NESTED);
++	/* Also (by analogy with the ar8216.c->ar8xxx_write) we need atomic context here,
++		 otherwise there will be marvelous glitches with phy link flaps at high RX load. */
++	local_irq_save(flags);
++
+ 	if (reg == AR9331_SW_REG_PAGE) {
+ 		ret = __ar9331_mdio_write(sbus, AR9331_SW_MDIO_PHY_MODE_PAGE,
+ 					  0, val);
+ 		if (ret < 0)
+ 			goto error;
+ 
++		local_irq_restore(flags);
+ 		mutex_unlock(&sbus->mdio_lock);
+ 
+ 		return 0;
+@@ -787,11 +951,13 @@
+ 	if (ret < 0)
+ 		goto error;
+ 
++	local_irq_restore(flags);
+ 	mutex_unlock(&sbus->mdio_lock);
+ 
+ 	return 0;
+ 
+ error:
++	local_irq_restore(flags);
+ 	mutex_unlock(&sbus->mdio_lock);
+ 	dev_err_ratelimited(&sbus->dev, "Bus error. Failed to write register.\n");
+ 
+@@ -808,7 +974,7 @@
+ 
+ static const struct regmap_range ar9331_valid_regs[] = {
+ 	regmap_reg_range(0x0, 0x0),
+-	regmap_reg_range(0x10, 0x14),
++	regmap_reg_range(0x04, 0x18),
+ 	regmap_reg_range(0x20, 0x24),
+ 	regmap_reg_range(0x2c, 0x30),
+ 	regmap_reg_range(0x40, 0x44),
+@@ -874,7 +1040,7 @@
+ 	.wr_table = &ar9331_register_set,
+ 	.rd_table = &ar9331_register_set,
+ 
+-	.cache_type = REGCACHE_RBTREE,
++	.cache_type = REGCACHE_NONE, /* Explicitly disable CACHE */
+ };
+ 
+ static struct regmap_bus ar9331_sw_bus = {
+@@ -889,6 +1055,7 @@
+ static int ar9331_sw_probe(struct mdio_device *mdiodev)
+ {
+ 	struct ar9331_sw_priv *priv;
++	struct device_node *np;
+ 	struct dsa_switch *ds;
+ 	int ret;
+ 
+@@ -912,6 +1079,19 @@
+ 
+ 	priv->sbus = mdiodev->bus;
+ 	priv->dev = &mdiodev->dev;
++	np = priv->dev->of_node;
++
++	if (of_property_read_bool(np, "qca,ar934x_sw")) {
++		priv->tag_proto = DSA_TAG_PROTO_QCA;
++		priv->ar934x_sw = true;
++	} else {
++		priv->tag_proto = DSA_TAG_PROTO_AR9331;
++		priv->ar934x_sw = false;
++	}
++	if (of_property_read_bool(np, "qca,strict-cpu-mode"))
++		priv->strict_cpu_mode = true;
++	else
++		priv->strict_cpu_mode = false;
+ 
+ 	ret = ar9331_sw_irq_init(priv);
+ 	if (ret)

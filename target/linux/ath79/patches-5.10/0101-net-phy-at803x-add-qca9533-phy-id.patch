@@ -1,0 +1,57 @@
+diff -rNu a/drivers/net/phy/at803x.c b/drivers/net/phy/at803x.c
+--- a/drivers/net/phy/at803x.c	2023-01-16 13:32:33.089560451 +0200
++++ b/drivers/net/phy/at803x.c	2023-01-26 14:30:20.635545450 +0200
+@@ -145,7 +145,11 @@
+ #define AT803X_MIN_DOWNSHIFT 2
+ #define AT803X_MAX_DOWNSHIFT 9
+ 
++#define ATH9XXX_PHY_ID 0x004dd040
++#define QCA9XXX_PHY_ID_MASK 0xfffffffc
+ #define ATH9331_PHY_ID 0x004dd041
++#define ATH9533_PHY_ID 0x004dd042
++
+ #define ATH8030_PHY_ID 0x004dd076
+ #define ATH8031_PHY_ID 0x004dd074
+ #define ATH8032_PHY_ID 0x004dd023
+@@ -1186,7 +1190,7 @@
+ 	int retries = 20;
+ 	int pair, ret;
+ 
+-	if (phydev->phy_id == ATH9331_PHY_ID ||
++	if (at803x_match_phy_id(phydev, ATH9XXX_PHY_ID) ||
+ 	    phydev->phy_id == ATH8032_PHY_ID)
+ 		pair_mask = 0x3;
+ 	else
+@@ -1226,7 +1230,7 @@
+ 	 */
+ 	phy_write(phydev, MII_BMCR, BMCR_ANENABLE);
+ 	phy_write(phydev, MII_ADVERTISE, ADVERTISE_CSMA);
+-	if (phydev->phy_id != ATH9331_PHY_ID &&
++	if (!at803x_match_phy_id(phydev, ATH9XXX_PHY_ID) &&
+ 	    phydev->phy_id != ATH8032_PHY_ID)
+ 		phy_write(phydev, MII_CTRL1000, 0);
+ 
+@@ -1427,9 +1431,12 @@
+ 	.cable_test_start	= at803x_cable_test_start,
+ 	.cable_test_get_status	= at803x_cable_test_get_status,
+ }, {
+-	/* ATHEROS AR9331 */
+-	PHY_ID_MATCH_EXACT(ATH9331_PHY_ID),
+-	.name			= "Qualcomm Atheros AR9331 built-in PHY",
++	/* ATHEROS AR9XXX */
++	.phy_id = ATH9XXX_PHY_ID,
++	.phy_id_mask = QCA9XXX_PHY_ID_MASK,
++	.name			= "Qualcomm Atheros AR9XXX built-in PHY",
++	.probe			= at803x_probe,
++	.remove			= at803x_remove,
+ 	.suspend		= at803x_suspend,
+ 	.resume			= at803x_resume,
+ 	.flags			= PHY_POLL_CABLE_TEST,
+@@ -1499,6 +1506,7 @@
+ 	{ PHY_ID_MATCH_EXACT(ATH8032_PHY_ID) },
+ 	{ PHY_ID_MATCH_EXACT(ATH8035_PHY_ID) },
+ 	{ PHY_ID_MATCH_EXACT(ATH9331_PHY_ID) },
++	{ PHY_ID_MATCH_EXACT(ATH9533_PHY_ID) },
+ 	{ PHY_ID_MATCH_EXACT(QCA8337_PHY_ID) },
+ 	{ PHY_ID_MATCH_EXACT(QCA8327_A_PHY_ID) },
+ 	{ PHY_ID_MATCH_EXACT(QCA8327_B_PHY_ID) },
