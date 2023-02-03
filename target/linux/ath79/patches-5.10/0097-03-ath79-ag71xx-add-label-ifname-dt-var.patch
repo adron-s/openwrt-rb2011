@@ -1,0 +1,22 @@
+diff -rNu a/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c b/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c
+--- a/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c	2023-01-10 15:14:32.561498236 +0200
++++ b/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c	2023-01-10 15:20:12.328910540 +0200
+@@ -1517,6 +1517,7 @@
+ 	struct ag71xx *ag;
+ 	u32 max_frame_len;
+ 	int tx_size, err;
++	const char *name;
+ 
+ 	if (!np)
+ 		return -ENODEV;
+@@ -1525,6 +1526,10 @@
+ 	if (!dev)
+ 		return -ENOMEM;
+ 
++	name = of_get_property(np, "label", NULL);
++	if(name)
++		strcpy(dev->name, name);
++
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	if (!res)
+ 		return -EINVAL;

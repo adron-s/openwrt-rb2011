@@ -1,0 +1,52 @@
+diff -rNu a/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c b/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c
+--- a/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c	2023-01-09 14:17:51.426076045 +0200
++++ b/drivers/net/ethernet/atheros/ag71xx/ag71xx_main.c	2023-01-10 10:45:56.512618862 +0200
+@@ -1002,7 +1002,7 @@
+ 	int ret;
+ 
+ 	netif_carrier_off(dev);
+-	max_frame_len = ag71xx_max_frame_len(dev->mtu);
++	max_frame_len = ag71xx_max_frame_len(dev->max_mtu);
+ 	ag->rx_buf_size = SKB_DATA_ALIGN(max_frame_len + NET_SKB_PAD + NET_IP_ALIGN);
+ 
+ 	/* setup max frame length */
+@@ -1620,20 +1620,26 @@
+ 	tx_size = AG71XX_TX_RING_SIZE_DEFAULT;
+ 	ag->rx_ring.order = ag71xx_ring_size_order(AG71XX_RX_RING_SIZE_DEFAULT);
+ 
+-	if (of_device_is_compatible(np, "qca,ar9340-eth") ||
+-	    of_device_is_compatible(np, "qca,qca9530-eth") ||
+-	    of_device_is_compatible(np, "qca,qca9550-eth") ||
+-	    of_device_is_compatible(np, "qca,qca9560-eth"))
+-		ag->desc_pktlen_mask = SZ_16K - 1;
+-	else
++	if (of_property_read_u32(np, "max-frame-size", &max_frame_len)) {
++		/* if no max-frame-size dt var */
++		if (of_device_is_compatible(np, "qca,ar9340-eth") ||
++		    of_device_is_compatible(np, "qca,qca9530-eth") ||
++		    of_device_is_compatible(np, "qca,qca9550-eth") ||
++		    of_device_is_compatible(np, "qca,qca9560-eth"))
++			ag->desc_pktlen_mask = SZ_16K - 1;
++		else
++			ag->desc_pktlen_mask = SZ_4K - 1;
++
++		if (ag->desc_pktlen_mask == SZ_16K - 1 &&
++		    !of_device_is_compatible(np, "qca,qca9550-eth") &&
++		    !of_device_is_compatible(np, "qca,qca9560-eth"))
++			max_frame_len = ag->desc_pktlen_mask;
++		else
++			max_frame_len = 1540;
++	} else {
++		/* max_frame_len := ${max-frame-size} dt var */
+ 		ag->desc_pktlen_mask = SZ_4K - 1;
+-
+-	if (ag->desc_pktlen_mask == SZ_16K - 1 &&
+-	    !of_device_is_compatible(np, "qca,qca9550-eth") &&
+-	    !of_device_is_compatible(np, "qca,qca9560-eth"))
+-		max_frame_len = ag->desc_pktlen_mask;
+-	else
+-		max_frame_len = 1540;
++	}
+ 
+ 	dev->min_mtu = 68;
+ 	dev->max_mtu = max_frame_len - ag71xx_max_frame_len(0);
