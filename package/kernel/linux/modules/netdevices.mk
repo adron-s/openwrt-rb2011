@@ -1330,6 +1330,31 @@ endef
 
 $(eval $(call KernelPackage,sfp))
 
+define KernelPackage/mdio-sfp-i2c
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=SFP-I2C based MDIO support
+  DEPENDS:=@TARGET_ath79_mikrotik +kmod-i2c-core
+  KCONFIG:= \
+	CONFIG_MDIO_I2C \
+	CONFIG_MDIO_SFP_I2C
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/mdio/mdio-sfp-i2c.ko \
+	$(LINUX_DIR)/drivers/net/mdio/mdio-i2c.ko@ge5.10
+  AUTOLOAD:=$(call AutoProbe,mdio-i2c mdio-sfp-i2c)
+endef
+
+define KernelPackage/mdio-sfp-i2c/description
+  This is a small MDIO driver for access sfp-coper PHY registers
+  with id 22(i2c id 0x56) via SFP-I2C bus.
+
+  This module is an alternative to the kmod-sfp, for the case of
+  direct use of the sgmii bus (without intermediate hardware phy).
+  This allows you to work normally with the SFP-RJ45 PHY (control the
+  link status, speed and other PHY parameters).
+endef
+
+$(eval $(call KernelPackage,mdio-sfp-i2c))
+
 define KernelPackage/igc
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) Ethernet Controller I225 Series support
