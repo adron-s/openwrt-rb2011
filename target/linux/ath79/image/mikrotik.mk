@@ -57,6 +57,17 @@ define Device/mikrotik_routerboard-952ui-5ac2nd
 endef
 TARGET_DEVICES += mikrotik_routerboard-952ui-5ac2nd
 
+define Device/mikrotik_routerboard-960pgs
+  $(Device/mikrotik_nor)
+  SOC := qca9558
+  DEVICE_MODEL := RouterBOARD 960PGS (hEX PoE)
+  IMAGE_SIZE := 16256k
+  DEVICE_PACKAGES += kmod-usb2 kmod-i2c-gpio kmod-mdio-sfp-i2c \
+  mtpoe_ctrl
+  SUPPORTED_DEVICES += rb-960pgs
+endef
+TARGET_DEVICES += mikrotik_routerboard-960pgs
+
 define Device/mikrotik_routerboard-962uigs-5hact2hnt
   $(Device/mikrotik_nor)
   SOC := qca9558
