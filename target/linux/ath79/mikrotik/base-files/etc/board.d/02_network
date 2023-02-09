@@ -40,6 +40,9 @@ ath79_setup_interfaces()
 	mikrotik,routerboard-2011r5)
 		ucidef_set_interfaces_lan_wan "port2 port3 port4 port5 port6 port7 port8 port9 port10" "port1"
 		;;
+	mikrotik,routerboard-960pgs)
+		ucidef_set_interfaces_lan_wan "port2 port3 port4 port5" "port1"
+		;;
 	*)
 		ucidef_set_interfaces_lan_wan "eth0" "eth1"
 		;;
